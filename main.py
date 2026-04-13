@@ -11,7 +11,7 @@ from zipfile import ZipFile
 from io import BytesIO
 import qrcode
 
-# ==================== 路径自适应配置 ====================
+# ==================== 路径自适应配置  ====================
 def get_base_path():
     """获取程序运行时的物理目录，确保打包后文件夹在 EXE 旁边"""
     if hasattr(sys, '_MEIPASS'):
