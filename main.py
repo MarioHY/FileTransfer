@@ -1,4 +1,5 @@
 import os
+import sys
 import socket
 import webbrowser
 import threading
@@ -10,9 +11,21 @@ from zipfile import ZipFile
 from io import BytesIO
 import qrcode
 
-# ==================== 配置 ====================
-UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# ==================== 路径自适应配置 ====================
+def get_base_path():
+    """获取程序运行时的物理目录，确保打包后文件夹在 EXE 旁边"""
+    if hasattr(sys, '_MEIPASS'):
+        # 打包后的环境下，sys.executable 是 exe 的路径
+        return os.path.dirname(os.path.realpath(sys.executable))
+    # 开发环境下，使用脚本路径
+    return os.path.dirname(os.path.abspath(__file__))
+
+BASE_PATH = get_base_path()
+UPLOAD_FOLDER = os.path.join(BASE_PATH, 'uploads')
+
+# 确保 uploads 目录存在
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
@@ -33,7 +46,6 @@ PORT = 5000
 BASE_URL = f"http://{LOCAL_IP}:{PORT}/"
 
 # ==================== 极简前端模板 ====================
-# 修复了刷新时丢失选中状态的问题 (使用 Map 记录状态)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="zh">
@@ -45,7 +57,7 @@ HTML_TEMPLATE = """
         :root { --primary: #2563eb; --danger: #dc2626; --bg: #f3f4f6; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: #1f2937; line-height: 1.5; }
-        .container { max-width: 800px; margin: 40px auto; background: white; padding: 30px; border-radius: 8px; shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .container { max-width: 800px; margin: 40px auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
         h1 { text-align: center; margin-bottom: 24px; font-weight: 600; }
         .upload-area { border: 2px dashed #d1d5db; border-radius: 8px; padding: 40px; text-align: center; cursor: pointer; background: #fafafa; transition: 0.2s; margin-bottom: 30px; }
         .upload-area:hover { border-color: var(--primary); background: #f0f7ff; }
@@ -62,31 +74,28 @@ HTML_TEMPLATE = """
         .file-size { color: #6b7280; font-size: 12px; width: 80px; text-align: right; }
         .checkbox { width: 18px; height: 18px; cursor: pointer; }
         input[type="file"] { display: none; }
-        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #374151; color: white; padding: 8px 20px; border-radius: 20px; font-size: 14px; opacity: 0; transition: 0.3s; }
+        .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #374151; color: white; padding: 8px 20px; border-radius: 20px; font-size: 14px; opacity: 0; transition: 0.3s; pointer-events: none; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>文件传输</h1>
-        
+        <h1>文件传输助手</h1>
         <div class="upload-area" id="dropZone">
             <p>点击或拖拽文件到这里上传</p>
             <input type="file" id="fileInput" multiple>
         </div>
-
         <div class="toolbar">
             <button onclick="toggleAll(true)">全选</button>
             <button onclick="toggleAll(false)">取消</button>
             <button class="btn-danger" onclick="batchDelete()">删除选中</button>
             <button class="btn-primary" style="margin-left: auto" onclick="batchDownload()">打包下载</button>
         </div>
-
         <div id="fileList"></div>
     </div>
     <div id="toast" class="toast"></div>
 
     <script>
-        let selectedFiles = new Set(); // 记录选中状态的核心逻辑
+        let selectedFiles = new Set();
 
         function showToast(msg) {
             const t = document.getElementById('toast');
@@ -96,7 +105,6 @@ HTML_TEMPLATE = """
 
         const dropZone = document.getElementById('dropZone');
         const fileInput = document.getElementById('fileInput');
-
         dropZone.onclick = () => fileInput.click();
         fileInput.onchange = (e) => handleUpload(e.target.files);
 
@@ -145,7 +153,7 @@ HTML_TEMPLATE = """
 
         function batchDelete() {
             if (!selectedFiles.size) return showToast('请先勾选');
-            if (!confirm(`确定删除这 ${selectedFiles.size} 个文件?`)) return;
+            if (!confirm(\`确定删除这 \${selectedFiles.size} 个文件?\`)) return;
             fetch('/batch_delete', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -170,13 +178,13 @@ HTML_TEMPLATE = """
         }
 
         loadFiles();
-        setInterval(loadFiles, 5000); // 增加刷新间隔，避免操作冲突
+        setInterval(loadFiles, 5000);
     </script>
 </body>
 </html>
 """
 
-# ==================== Flask 路由逻辑  ====================
+# ==================== Flask 路由逻辑 ====================
 @app.route('/')
 def index(): return render_template_string(HTML_TEMPLATE)
 
@@ -184,15 +192,18 @@ def index(): return render_template_string(HTML_TEMPLATE)
 def upload():
     files = request.files.getlist('files')
     for file in files:
-        if file.filename: file.save(os.path.join(app.config['UPLOAD_FOLDER'], file.filename))
+        if file.filename:
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], file.filename))
     return jsonify({'status': 'success', 'msg': f'成功上传 {len(files)} 个文件'})
 
 @app.route('/file_list')
 def file_list():
     files = []
-    for f in os.listdir(app.config['UPLOAD_FOLDER']):
-        p = os.path.join(app.config['UPLOAD_FOLDER'], f)
-        if os.path.isfile(p): files.append({'name': f, 'size': os.path.getsize(p), 'mtime': os.path.getmtime(p)})
+    if os.path.exists(app.config['UPLOAD_FOLDER']):
+        for f in os.listdir(app.config['UPLOAD_FOLDER']):
+            p = os.path.join(app.config['UPLOAD_FOLDER'], f)
+            if os.path.isfile(p):
+                files.append({'name': f, 'size': os.path.getsize(p), 'mtime': os.path.getmtime(p)})
     files.sort(key=lambda x: x['mtime'], reverse=True)
     return jsonify({'files': files})
 
@@ -223,35 +234,33 @@ def batch_download():
 def start_control_panel():
     root = tk.Tk()
     root.title("文件传输控制台")
-    root.geometry("300x400")
+    root.geometry("300x420")
     root.resizable(False, False)
 
-    # 生成二维码图片
+    # 生成二维码
     qr = qrcode.QRCode(box_size=5, border=2)
     qr.add_data(BASE_URL)
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white")
     
-    # 转换为Tkinter可用的图片
     buf = BytesIO()
     qr_img.save(buf, format='PNG')
     buf.seek(0)
     img = Image.open(buf)
     tk_img = ImageTk.PhotoImage(img)
 
-    # UI 布局
     tk.Label(root, text="手机扫码访问:", font=("Arial", 10)).pack(pady=10)
     qr_label = tk.Label(root, image=tk_img)
     qr_label.image = tk_img 
     qr_label.pack()
 
-    tk.Label(root, text=BASE_URL, fg="blue", font=("Arial", 9)).pack(pady=5)
+    tk.Label(root, text=BASE_URL, fg="blue", font=("Arial", 9), wraplength=250).pack(pady=5)
 
-    tk.Button(root, text="在浏览器打开地址", command=lambda: webbrowser.open(BASE_URL), 
-              bg="#2563eb", fg="white", padx=20, pady=5).pack(pady=10)
+    tk.Button(root, text="在浏览器打开", command=lambda: webbrowser.open(BASE_URL), 
+              bg="#2563eb", fg="white", width=20, pady=5).pack(pady=10)
     
-    tk.Button(root, text="打开文件所在目录", command=lambda: os.startfile(UPLOAD_FOLDER), 
-              padx=20, pady=5).pack()
+    tk.Button(root, text="打开存储目录", command=lambda: os.startfile(UPLOAD_FOLDER), 
+              width=20, pady=5).pack()
 
     def on_closing():
         if messagebox.askokcancel("退出", "确定要关闭文件传输服务吗？"):
@@ -262,14 +271,17 @@ def start_control_panel():
 
 # ==================== 启动逻辑 ====================
 if __name__ == '__main__':
-    # 自动打开网页
-    threading.Timer(1.5, lambda: webbrowser.open(BASE_URL)).start()
-    
-    # 在新线程中运行 Flask
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False))
-    flask_thread.daemon = True
+    # Flask 启动线程
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False),
+        daemon=True
+    )
     flask_thread.start()
 
-    #  运行控制中心
+    # 稍等一下再打开网页，确保服务已启动
+    threading.Timer(1.0, lambda: webbrowser.open(BASE_URL)).start()
+
     print(f"服务已启动: {BASE_URL}")
+    print(f"存储路径: {UPLOAD_FOLDER}")
+    
     start_control_panel()
